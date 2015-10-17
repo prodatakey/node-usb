@@ -43,6 +43,9 @@ before_install:
   - nvm use $NODE_VERSION
   - npm config set python `which python`
 
+install:
+  - export PATH=./node_modules/.bin/:$PATH
+
 script:
   - npm install --build-from-source
   - npm run package-binary
