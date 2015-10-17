@@ -1,74 +1,106 @@
 #include "node_usb.h"
 
-extern "C" void LIBUSB_CALL usbCompletionCb(libusb_transfer *transfer);
-void handleCompletion(Transfer* t);
+auto UnwrapTransfer = &Nan::ObjectWrap::Unwrap<Transfer>;
+
+// static
+Nan::Persistent<Function> Transfer::constructor;
 
 #ifndef USE_POLL
-#include "uv_async_queue.h"
-UVQueue<Transfer*> completionQueue(handleCompletion);
+// static
+UVQueue<libusb_transfer*> Transfer::completionQueue(CompletionCallback);
 #endif
 
-Transfer::Transfer(){
+Transfer::Transfer() {
 	transfer = libusb_alloc_transfer(0);
-	transfer->callback = usbCompletionCb;
+
+	#ifndef USE_POLL
+	transfer->callback = Transfer::QueueCompletion;
+	#else
+	transfer->callback = Transfer::CompletionCallback;
+	#endif
 	transfer->user_data = this;
 	DEBUG_LOG("Created Transfer %p", this);
 }
 
-Transfer::~Transfer(){
+Transfer::~Transfer() {
 	DEBUG_LOG("Freed Transfer %p", this);
-	NanDisposePersistent(v8callback);
+	v8callback.Reset();
 	libusb_free_transfer(transfer);
 }
 
-// new Transfer(device, endpointAddr, type, timeout)
-NAN_METHOD(Transfer_constructor) {
-	ENTER_CONSTRUCTOR(5);
-	UNWRAP_ARG(Device, device, 0);
-	int endpoint, type, timeout;
-	INT_ARG(endpoint, 1);
-	INT_ARG(type, 2);
-	INT_ARG(timeout, 3);
-	CALLBACK_ARG(4);
+// static
+void Transfer::Init(Local<Object> exports) {
+	Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(New);
+	tpl->SetClassName(Nan::New("Transfer").ToLocalChecked());
+	tpl->InstanceTemplate()->SetInternalFieldCount(1);
+
+	Nan::SetPrototypeMethod(tpl, "submit", Submit);
+	Nan::SetPrototypeMethod(tpl, "cancel", Cancel);
+
+	auto confun = Nan::GetFunction(tpl).ToLocalChecked();
+	constructor.Reset(confun);
+
+	// Add the Transfer constructor to the module
+	exports->Set(Nan::New("Transfer").ToLocalChecked(), confun);
+}
+
+// new Transfer(device, endpointAddr, type, timeout, callback)
+// static
+void Transfer::New(const Nan::FunctionCallbackInfo<Value>& args) {
+	if (!args.IsConstructCall()) return Nan::ThrowError("Must be called with `new`!");
+
+	if(args.Length() == 0 || !args[0]->IsObject())
+		return Nan::ThrowTypeError("The Device you'd like to transfer to must be provided.");
+	if(args.Length() == 1 || !args[1]->IsNumber())
+		return Nan::ThrowTypeError("The endpoint index must be specified");
+	if(args.Length() == 2 || !args[2]->IsNumber())
+		return Nan::ThrowTypeError("The type must be specified");
+	if(args.Length() == 3 || !args[3]->IsNumber())
+		return Nan::ThrowTypeError("A transfer timeout must be specified.");
+	if(args.Length() == 4 || !args[4]->IsFunction())
+		return Nan::ThrowTypeError("A completion callback must be provided");
+
+	auto self = new Transfer();
 
 	setConst(args.This(), "device", args[0]);
-	auto self = new Transfer();
+
 	self->attach(args.This());
-	self->device = device;
-	self->transfer->endpoint = endpoint;
-	self->transfer->type = type;
-	self->transfer->timeout = timeout;
+	self->device = Device::Unwrap(Nan::To<Object>(args[0]).ToLocalChecked());
+	self->transfer->endpoint = Nan::To<int>(args[1]).FromJust();
+	self->transfer->type = Nan::To<int>(args[2]).FromJust();
+	self->transfer->timeout = Nan::To<int>(args[3]).FromJust();
 
-	NanAssignPersistent(self->v8callback, callback);
+	self->v8callback.Reset(args[4].As<Function>());
 
-	NanReturnValue(args.This());
+	args.GetReturnValue().Set(args.This());
 }
 
 // Transfer.submit(buffer, callback)
-NAN_METHOD(Transfer_Submit) {
-	ENTER_METHOD(Transfer, 1);
+// static
+void Transfer::Submit(const Nan::FunctionCallbackInfo<Value>& args) {
+	if(args.Length() == 0 || !node::Buffer::HasInstance(args[0]))
+		return Nan::ThrowTypeError("You must provide a transfer buffer. I mean, if you want to transfer something...");
+
+	Transfer* self = UnwrapTransfer(args.Holder());
+
+	if (!self->device->IsOpen())
+		return Nan::ThrowError("The device must be open before you can transfer data to it.");
 
 	if (self->transfer->buffer){
-		THROW_ERROR("Transfer is already active")
+		return Nan::ThrowError("A transfer is already underway for this device.");
 	}
 
-	if (!Buffer::HasInstance(args[0])){
-		THROW_BAD_ARGS("Buffer arg [0] must be Buffer");
-	}
 	Local<Object> buffer_obj = args[0]->ToObject();
-	if (!self->device->device_handle){
-		THROW_ERROR("Device is not open");
-	}
 
 	// Can't be cached in constructor as device could be closed and re-opened
-	self->transfer->dev_handle = self->device->device_handle;
+	self->transfer->dev_handle = self->device->DeviceHandle();
 
-	NanAssignPersistent(self->v8buffer, buffer_obj);
-	self->transfer->buffer = (unsigned char*) Buffer::Data(buffer_obj);
-	self->transfer->length = Buffer::Length(buffer_obj);
+	self->v8buffer.Reset(buffer_obj);
+	self->transfer->buffer = (unsigned char*)node::Buffer::Data(buffer_obj);
+	self->transfer->length = node::Buffer::Length(buffer_obj);
 
 	self->ref();
-	self->device->ref();
+	//TODO: Device lifetime self->device->ref();
 
 	#ifndef USE_POLL
 	completionQueue.ref();
@@ -85,73 +117,74 @@ NAN_METHOD(Transfer_Submit) {
 	);
 
 	CHECK_USB(libusb_submit_transfer(self->transfer));
-	NanReturnValue(args.This());
+
+	args.GetReturnValue().Set(args.This());
 }
 
-extern "C" void LIBUSB_CALL usbCompletionCb(libusb_transfer *transfer){
+// static
+void Transfer::Cancel(const Nan::FunctionCallbackInfo<Value>& args) {
+	Transfer* self = UnwrapTransfer(args.Holder());
+
+	DEBUG_LOG("Cancel %p %i", self, !!self->transfer->buffer);
+
+	Local<Boolean> result = Nan::False();
+
+	int r = libusb_cancel_transfer(self->transfer);
+	if (r != LIBUSB_ERROR_NOT_FOUND){
+		CHECK_USB(r);
+		result = Nan::True();
+	}
+
+	args.GetReturnValue().Set(result);
+}
+
+// static
+void Transfer::CompletionCallback(libusb_transfer* transfer) {
 	Transfer* t = static_cast<Transfer*>(transfer->user_data);
+
 	DEBUG_LOG("Completion callback %p", t);
 	assert(t != NULL);
 
-	#ifdef USE_POLL
-	handleCompletion(t);
-	#else
-	completionQueue.post(t);
-	#endif
+	t->HandleCompletion();
 }
 
-void handleCompletion(Transfer* self){
-	NanScope();
-	DEBUG_LOG("HandleCompletion %p", self);
+// static
+void Transfer::QueueCompletion(libusb_transfer* transfer) {
+	completionQueue.post(transfer);
+}
 
-	self->device->unref();
+void Transfer::HandleCompletion() {
+	Nan::HandleScope scope;
+
+	DEBUG_LOG("HandleCompletion %p", this);
+
+	//TODO: Device lifetime this->device->unref();
 	#ifndef USE_POLL
 	completionQueue.unref();
 	#endif
 
 	// The callback may resubmit and overwrite these, so need to clear the
 	// persistent first.
-	Local<Object> buffer = NanNew<Object>(self->v8buffer);
-	NanDisposePersistent(self->v8buffer);
-	self->transfer->buffer = NULL;
+	Local<Object> buffer = Nan::New<Object>(this->v8buffer);
+	this->v8buffer.Reset();
+	this->transfer->buffer = NULL;
 
-	if (!self->v8callback.IsEmpty()) {
-		Handle<Value> error = NanUndefined();
-		if (self->transfer->status != 0){
-			error = libusbException(self->transfer->status);
+	if (!this->v8callback.IsEmpty()) {
+		Local<Value> error = Nan::Undefined();
+		if (this->transfer->status != 0){
+			error = libusbException(this->transfer->status);
 		}
-		Handle<Value> argv[] = {error, buffer,
-			NanNew<Uint32>((uint32_t) self->transfer->actual_length)};
-		TryCatch try_catch;
-		NanMakeCallback(NanObjectWrapHandle(self), NanNew(self->v8callback), 3, argv);
+
+		Local<Value> argv[] = {error, buffer,
+			Nan::New<Uint32>((uint32_t) this->transfer->actual_length)};
+
+		Nan::TryCatch try_catch;
+		Nan::MakeCallback(this->handle(), Nan::New(this->v8callback), 3, argv);
 		if (try_catch.HasCaught()) {
-			FatalException(try_catch);
+			Nan::FatalException(try_catch);
 		}
 	}
 
-	self->unref();
+	this->unref();
 }
 
-NAN_METHOD(Transfer_Cancel){
-	ENTER_METHOD(Transfer, 0);
-	DEBUG_LOG("Cancel %p %i", self, !!self->transfer->buffer);
-	int r = libusb_cancel_transfer(self->transfer);
-	if (r == LIBUSB_ERROR_NOT_FOUND){
-		// Not useful to throw an error for this case
-		NanReturnValue(NanFalse());
-	} else {
-		CHECK_USB(r);
-		NanReturnValue(NanTrue());
-	}
-}
-
-void Transfer::Init(Handle<Object> target){
-	Local<FunctionTemplate> tpl = NanNew<FunctionTemplate>(Transfer_constructor);
-	tpl->SetClassName(NanNew("Transfer"));
-	tpl->InstanceTemplate()->SetInternalFieldCount(1);
-
-	NODE_SET_PROTOTYPE_METHOD(tpl, "submit", Transfer_Submit);
-	NODE_SET_PROTOTYPE_METHOD(tpl, "cancel", Transfer_Cancel);
-
-	target->Set(NanNew("Transfer"), tpl->GetFunction());
-}

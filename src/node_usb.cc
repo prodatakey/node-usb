@@ -1,3 +1,5 @@
+#include <sstream>
+
 #include "node_usb.h"
 #include "uv_async_queue.h"
 
@@ -5,7 +7,7 @@ NAN_METHOD(SetDebugLevel);
 NAN_METHOD(GetDeviceList);
 NAN_METHOD(EnableHotplugEvents);
 NAN_METHOD(DisableHotplugEvents);
-void initConstants(Handle<Object> target);
+void initConstants(Handle<Object> exports);
 
 libusb_context* usb_context;
 
@@ -17,11 +19,11 @@ std::map<int, uv_poll_t*> pollByFD;
 
 struct timeval zero_tv = {0, 0};
 
-void onPollSuccess(uv_poll_t* handle, int status, int events){
+void onPollSuccess(uv_poll_t* handle, int status, int events) {
 	libusb_handle_events_timeout(usb_context, &zero_tv);
 }
 
-void LIBUSB_CALL onPollFDAdded(int fd, short events, void *user_data){
+void LIBUSB_CALL onPollFDAdded(int fd, short events, void *user_data) {
 	uv_poll_t *poll_fd;
 	auto it = pollByFD.find(fd);
 	if (it != pollByFD.end()){
@@ -38,7 +40,7 @@ void LIBUSB_CALL onPollFDAdded(int fd, short events, void *user_data){
 	uv_poll_start(poll_fd, flags, onPollSuccess);
 }
 
-void LIBUSB_CALL onPollFDRemoved(int fd, void *user_data){
+void LIBUSB_CALL onPollFDRemoved(int fd, void *user_data) {
 	auto it = pollByFD.find(fd);
 	if (it != pollByFD.end()){
 		DEBUG_LOG("Removed pollfd %i, %p", fd, it->second);
@@ -51,19 +53,20 @@ void LIBUSB_CALL onPollFDRemoved(int fd, void *user_data){
 #else
 uv_thread_t usb_thread;
 
-void USBThreadFn(void*){
+void USBThreadFn(void*) {
 	while(1) libusb_handle_events(usb_context);
 }
 #endif
 
-extern "C" void Initialize(Handle<Object> target) {
-	NanScope();
+void InitializeModule(Handle<Object> exports) {
+	Nan::HandleScope();
 
-	// Initialize libusb. On error, halt initialization.
+	//CHANGE: Initialize libusb. On error, throw, used to set a property with the error code and silently return
 	int res = libusb_init(&usb_context);
-	target->Set(NanNew<String>("INIT_ERROR"), NanNew<Number>(res));
-	if (res != 0) {
-		return;
+	if(res) {
+		std::stringstream ss;
+		ss << "Error initializing USB library: " << res;
+		Nan::ThrowError(ss.str().c_str());
 	}
 
 	#ifdef USE_POLL
@@ -81,65 +84,79 @@ extern "C" void Initialize(Handle<Object> target) {
 	uv_thread_create(&usb_thread, USBThreadFn, NULL);
 	#endif
 
-	Device::Init(target);
-	Transfer::Init(target);
+	Device::Init(exports);
+	Transfer::Init(exports);
 
-	NODE_SET_METHOD(target, "setDebugLevel", SetDebugLevel);
-	NODE_SET_METHOD(target, "getDeviceList", GetDeviceList);
-	NODE_SET_METHOD(target, "_enableHotplugEvents", EnableHotplugEvents);
-	NODE_SET_METHOD(target, "_disableHotplugEvents", DisableHotplugEvents);
-	initConstants(target);
+	Nan::SetMethod(exports, "setDebugLevel", SetDebugLevel);
+	Nan::SetMethod(exports, "getDeviceList", GetDeviceList);
+	Nan::SetMethod(exports, "_enableHotplugEvents", EnableHotplugEvents);
+	Nan::SetMethod(exports, "_disableHotplugEvents", DisableHotplugEvents);
+
+	initConstants(exports);
 }
 
-NODE_MODULE(usb_bindings, Initialize)
+NODE_MODULE(usb_bindings, InitializeModule)
 
-NAN_METHOD(SetDebugLevel) {
-	NanScope();
+void SetDebugLevel(const Nan::FunctionCallbackInfo<Value>& args) {
 	if (args.Length() != 1 || !args[0]->IsUint32() || args[0]->Uint32Value() > 4) {
-		THROW_BAD_ARGS("Usb::SetDebugLevel argument is invalid. [uint:[0-4]]!")
+		return Nan::ThrowTypeError("Usb::SetDebugLevel argument is invalid. [uint:[0-4]]!");
 	}
 
 	libusb_set_debug(usb_context, args[0]->Uint32Value());
-	NanReturnValue(NanUndefined());
 }
 
-NAN_METHOD(GetDeviceList) {
-	NanScope();
+void GetDeviceList(const Nan::FunctionCallbackInfo<Value>& args) {
+	if(args.Length() < 1 || !args[0]->IsFunction()) {
+		return Nan::ThrowTypeError("Callback must be supplied as first argument");
+	}
+	Local<Function> callback = args[0].As<Function>();
+
+	Local<Value> argv[2] = { Nan::Null(), Nan::Null() };
+
 	libusb_device **devs;
 	int cnt = libusb_get_device_list(usb_context, &devs);
-	CHECK_USB(cnt);
+	if(cnt < LIBUSB_SUCCESS) {
+		//js/ callback(execption, null);
+		argv[0] = libusbException(cnt);
+		callback->Call(args.This(), 2, argv);
+		return;
+	}
 
-	Handle<Array> arr = NanNew<Array>(cnt);
+	Handle<Array> arr = Nan::New<Array>(cnt);
 
 	for(int i = 0; i < cnt; i++) {
-		arr->Set(i, Device::get(devs[i]));
+		arr->Set(i, Device::FromLibUSBDevice(devs[i]));
 	}
+
+	//js/ callback(null, array);
+	argv[1] = arr;
+	callback->Call(args.This(), 2, argv);
+
 	libusb_free_device_list(devs, true);
-	NanReturnValue(arr);
 }
 
-Persistent<Object> hotplugThis;
+Nan::Persistent<Object> hotplugThis;
 
 void handleHotplug(std::pair<libusb_device*, libusb_hotplug_event> args){
-	NanScope();
+	Nan::HandleScope();
 
 	libusb_device* dev = args.first;
 	libusb_hotplug_event event = args.second;
 
 	DEBUG_LOG("HandleHotplug %p %i", dev, event);
 
-	Handle<Value> v8dev = Device::get(dev);
+	Handle<Value> v8dev; //TODO = Device::get(dev);
 	libusb_unref_device(dev);
 
 	Handle<String> eventName;
 
 	if (LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED == event) {
 		DEBUG_LOG("Device arrived");
-		eventName = NanNew("attach");
+		eventName = Nan::New("attach").ToLocalChecked();
 
 	} else if (LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT == event) {
 		DEBUG_LOG("Device left");
-		eventName = NanNew("detach");
+		eventName = Nan::New("detach").ToLocalChecked();
 
 	} else {
 		DEBUG_LOG("Unhandled hotplug event %d\n", event);
@@ -147,7 +164,7 @@ void handleHotplug(std::pair<libusb_device*, libusb_hotplug_event> args){
 	}
 
 	Handle<Value> argv[] = {eventName, v8dev};
-	NanMakeCallback(NanNew(hotplugThis), "emit", 2, argv);
+	Nan::MakeCallback(Nan::New(hotplugThis), "emit", 2, argv);
 }
 
 bool hotplugEnabled = 0;
@@ -161,11 +178,9 @@ int LIBUSB_CALL hotplug_callback(libusb_context *ctx, libusb_device *dev,
 	return 0;
 }
 
-NAN_METHOD(EnableHotplugEvents) {
-	NanScope();
-
+void EnableHotplugEvents(const Nan::FunctionCallbackInfo<Value>& args) {
 	if (!hotplugEnabled) {
-		NanAssignPersistent(hotplugThis, args.This());
+		hotplugThis.Reset(args.This());
 		CHECK_USB(libusb_hotplug_register_callback(usb_context,
 			(libusb_hotplug_event)(LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT),
 			(libusb_hotplug_flag)0, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY,
@@ -173,100 +188,97 @@ NAN_METHOD(EnableHotplugEvents) {
 		hotplugQueue.ref();
 		hotplugEnabled = true;
 	}
-	NanReturnValue(NanUndefined());
 }
 
-NAN_METHOD(DisableHotplugEvents) {
-	NanScope();
+void DisableHotplugEvents(const Nan::FunctionCallbackInfo<Value>& args) {
 	if (hotplugEnabled) {
 		libusb_hotplug_deregister_callback(usb_context, hotplugHandle);
 		hotplugQueue.unref();
 		hotplugEnabled = false;
 	}
-	NanReturnValue(NanUndefined());
 }
 
-void initConstants(Handle<Object> target){
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_PER_INTERFACE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_AUDIO);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_COMM);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_HID);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_PRINTER);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_PTP);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_MASS_STORAGE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_HUB);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_DATA);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_WIRELESS);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_APPLICATION);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CLASS_VENDOR_SPEC);
+void initConstants(Handle<Object> exports){
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_PER_INTERFACE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_AUDIO);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_COMM);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_HID);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_PRINTER);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_PTP);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_MASS_STORAGE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_HUB);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_DATA);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_WIRELESS);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_APPLICATION);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_VENDOR_SPEC);
 	// libusb_standard_request
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_GET_STATUS);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_CLEAR_FEATURE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_SET_FEATURE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_SET_ADDRESS );
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_GET_DESCRIPTOR);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_SET_DESCRIPTOR);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_GET_CONFIGURATION);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_SET_CONFIGURATION );
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_GET_INTERFACE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_SET_INTERFACE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_SYNCH_FRAME);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_GET_STATUS);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_CLEAR_FEATURE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_SET_FEATURE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_SET_ADDRESS );
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_GET_DESCRIPTOR);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_SET_DESCRIPTOR);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_GET_CONFIGURATION);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_SET_CONFIGURATION );
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_GET_INTERFACE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_SET_INTERFACE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_SYNCH_FRAME);
 	// libusb_descriptor_type
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_DEVICE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_CONFIG);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_STRING);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_INTERFACE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_ENDPOINT);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_HID);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_REPORT);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_PHYSICAL);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_DT_HUB);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_DEVICE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_CONFIG);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_STRING);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_INTERFACE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_ENDPOINT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_HID);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_REPORT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_PHYSICAL);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_DT_HUB);
 	// libusb_endpoint_direction
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ENDPOINT_IN);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ENDPOINT_OUT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ENDPOINT_IN);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ENDPOINT_OUT);
 	// libusb_transfer_type
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_TYPE_CONTROL);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_TYPE_ISOCHRONOUS);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_TYPE_BULK);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_TYPE_INTERRUPT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_TYPE_CONTROL);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_TYPE_ISOCHRONOUS);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_TYPE_BULK);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_TYPE_INTERRUPT);
 	// libusb_iso_sync_type
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_SYNC_TYPE_NONE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_SYNC_TYPE_ASYNC);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_SYNC_TYPE_ADAPTIVE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_SYNC_TYPE_SYNC);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_SYNC_TYPE_NONE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_SYNC_TYPE_ASYNC);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_SYNC_TYPE_ADAPTIVE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_SYNC_TYPE_SYNC);
 	// libusb_iso_usage_type
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_USAGE_TYPE_DATA);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_USAGE_TYPE_FEEDBACK);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_ISO_USAGE_TYPE_IMPLICIT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_USAGE_TYPE_DATA);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_USAGE_TYPE_FEEDBACK);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_ISO_USAGE_TYPE_IMPLICIT);
 	// libusb_transfer_status
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_COMPLETED);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_ERROR);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_TIMED_OUT);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_CANCELLED);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_STALL);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_NO_DEVICE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_OVERFLOW);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_COMPLETED);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_ERROR);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_TIMED_OUT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_CANCELLED);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_STALL);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_NO_DEVICE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_OVERFLOW);
 	// libusb_transfer_flags
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_SHORT_NOT_OK);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_FREE_BUFFER);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_TRANSFER_FREE_TRANSFER);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_SHORT_NOT_OK);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_FREE_BUFFER);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_TRANSFER_FREE_TRANSFER);
 	// libusb_request_type
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_TYPE_STANDARD);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_TYPE_CLASS);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_TYPE_VENDOR);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_REQUEST_TYPE_RESERVED);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_TYPE_STANDARD);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_TYPE_CLASS);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_TYPE_VENDOR);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_REQUEST_TYPE_RESERVED);
 	// libusb_request_recipient
-	NODE_DEFINE_CONSTANT(target, LIBUSB_RECIPIENT_DEVICE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_RECIPIENT_INTERFACE);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_RECIPIENT_ENDPOINT);
-	NODE_DEFINE_CONSTANT(target, LIBUSB_RECIPIENT_OTHER);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_RECIPIENT_DEVICE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_RECIPIENT_INTERFACE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_RECIPIENT_ENDPOINT);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_RECIPIENT_OTHER);
 
-	NODE_DEFINE_CONSTANT(target, LIBUSB_CONTROL_SETUP_SIZE);
+	NODE_DEFINE_CONSTANT(exports, LIBUSB_CONTROL_SETUP_SIZE);
 }
 
 Local<Value> libusbException(int errorno) {
 	const char* err = libusb_error_name(errorno);
-	Local<Value> e  = NanError(err);
-	e->ToObject()->Set(NanNew<String>("errno"), NanNew<Integer>(errorno));
+	Local<Value> e  = Nan::Error(err);
+	e->ToObject()->Set(Nan::New("errno").ToLocalChecked(), Nan::New<Integer>(errorno));
 	return e;
 }

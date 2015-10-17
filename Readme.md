@@ -34,11 +34,15 @@ usb
 
 Top-level object.
 
-### usb.getDeviceList()
-Return a list of `Device` objects for the USB devices attached to the system.
+### usb.getDeviceList(callback(err, devices))
+Retreive a list of `Device` objects for the USB devices attached to the system.
 
-### usb.findByIds(vid, pid)
+For deterministic operation, you must not store a reference to a device that you do not call `open()` on while inside of the callback.
+
+### usb.findByIds(vid, pid, callback(err, device))
 Convenience method to get the first device with the specified VID and PID, or `undefined` if no such device is present.
+
+For deterministic operation, you must not store a reference to the device if you do not call `open()` on it while inside of the callback.
 
 ### usb.LIBUSB_*
 Constant properties from libusb
