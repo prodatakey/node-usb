@@ -5,6 +5,10 @@ os:
   - linux
   - osx
 
+env:
+  global:
+    secure: VwwHS3ZYxu5WudTcWRw588aekYZrTHMDvziNWLhPnadVs+ami6EF7CMHFZenkvSehmmaunKaH0vcNuxDXqLjrZN8Qt6aOuVVq9o/N6+8OG6/E2D0lDRFF9OZdAKetzS7EtoZfVJpqe009leg9V5mjx3uo1WRlc6SqmeKynaUDaY=
+
 node_js:
   - "4.1"
   - "4.0"
@@ -12,11 +16,14 @@ node_js:
   - "0.10"
   - "0.8"
 
-install:
-  - export PATH=./node_modules/.bin/:$PATH
+addons:
+  apt:
+    packages:
+      - libudev-dev
+      - g++-4.8
 
 script:
-  - npm install --build-from-source --node-gyp=$(which pangyp)
+  - npm install --build-from-source
   - "./node_modules/.bin/node-pre-gyp package"
   - echo $TRAVIS_TAG
   - echo $TRAVIS_PULL_REQUEST
