@@ -29,7 +29,7 @@ Transfer::~Transfer() {
 }
 
 // static
-void Transfer::Init(Local<Object> exports) {
+NAN_MODULE_INIT(Transfer::Init) {
 	Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(New);
 	tpl->SetClassName(Nan::New("Transfer").ToLocalChecked());
 	tpl->InstanceTemplate()->SetInternalFieldCount(1);
@@ -41,7 +41,7 @@ void Transfer::Init(Local<Object> exports) {
 	constructor.Reset(confun);
 
 	// Add the Transfer constructor to the module
-	exports->Set(Nan::New("Transfer").ToLocalChecked(), confun);
+	target->Set(Nan::New("Transfer").ToLocalChecked(), confun);
 }
 
 // new Transfer(device, endpointAddr, type, timeout, callback)

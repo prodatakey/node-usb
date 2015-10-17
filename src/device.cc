@@ -27,7 +27,7 @@ Device::~Device(){
 }
 
 // static
-void Device::Init(Local<Object> exports) {
+NAN_MODULE_INIT(Device::Init) {
 	Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(New);
 	tpl->SetClassName(Nan::New("Device").ToLocalChecked());
 	tpl->InstanceTemplate()->SetInternalFieldCount(1);
@@ -51,7 +51,7 @@ void Device::Init(Local<Object> exports) {
 	constructor.Reset(confun);
 
 	// Add the Device constructor to the module
-	exports->Set(Nan::New("Device").ToLocalChecked(), confun);
+	target->Set(Nan::New("Device").ToLocalChecked(), confun);
 }
 
 // static
