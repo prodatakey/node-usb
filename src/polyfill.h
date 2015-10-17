@@ -24,7 +24,7 @@
 
 	NAN_INLINE v8::MaybeLocal<v8::Value> Call(
 		v8::Local<v8::Function> fun
-	  , v8::Local<v8::Value> recv
+	  , v8::Local<v8::Object> recv
 	  , int argc
 	  , v8::Local<v8::Value> argv[]) {
 	  return fun->Call(Nan::GetCurrentContext(), recv, argc, argv);
