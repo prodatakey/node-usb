@@ -333,7 +333,7 @@ void Device::unpin(libusb_device* device) {
 */
 class UsbRequest {
   public:
-	void submit(Device* d, Handle<Function> cb, uv_work_cb backend, uv_work_cb after) {
+	void submit(Device* d, Local<Function> cb, uv_work_cb backend, uv_work_cb after) {
 		callback.Reset(cb);
 		device = d;
 		//TMP device->ref();
@@ -342,7 +342,7 @@ class UsbRequest {
 	}
 
 	static void default_after(uv_work_t *req) {
-		Nan::HandleScope();
+		Nan::HandleScope scope;
 		auto baton = (UsbRequest*) req->data;
 
 		auto device = baton->device->handle();

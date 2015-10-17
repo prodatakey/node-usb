@@ -7,7 +7,7 @@ NAN_METHOD(SetDebugLevel);
 NAN_METHOD(GetDeviceList);
 NAN_METHOD(EnableHotplugEvents);
 NAN_METHOD(DisableHotplugEvents);
-void initConstants(Handle<Object> exports);
+void initConstants(Local<Object> exports);
 
 libusb_context* usb_context;
 
@@ -59,9 +59,7 @@ void USBThreadFn(void*) {
 #endif
 
 NAN_MODULE_INIT(InitializeModule) {
-	Nan::HandleScope();
-
-	//CHANGE: Initialize libusb. On error, throw, used to set a property with the error code and silently return
+	//CHANGE: Initialize libusb. On error, throw; used to set a property with the error code and silently return
 	int res = libusb_init(&usb_context);
 	if(res) {
 		std::stringstream ss;
@@ -122,7 +120,7 @@ void GetDeviceList(const Nan::FunctionCallbackInfo<Value>& args) {
 		return;
 	}
 
-	Handle<Array> arr = Nan::New<Array>(cnt);
+	Local<Array> arr = Nan::New<Array>(cnt);
 
 	for(int i = 0; i < cnt; i++) {
 		arr->Set(i, Device::FromLibUSBDevice(devs[i]));
@@ -138,17 +136,17 @@ void GetDeviceList(const Nan::FunctionCallbackInfo<Value>& args) {
 Nan::Persistent<Object> hotplugThis;
 
 void handleHotplug(std::pair<libusb_device*, libusb_hotplug_event> args){
-	Nan::HandleScope();
+	Nan::HandleScope scope;
 
 	libusb_device* dev = args.first;
 	libusb_hotplug_event event = args.second;
 
 	DEBUG_LOG("HandleHotplug %p %i", dev, event);
 
-	Handle<Value> v8dev; //TODO = Device::get(dev);
+	Local<Value> v8dev; //TODO = Device::get(dev);
 	libusb_unref_device(dev);
 
-	Handle<String> eventName;
+	Local<String> eventName;
 
 	if (LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED == event) {
 		DEBUG_LOG("Device arrived");
@@ -163,7 +161,7 @@ void handleHotplug(std::pair<libusb_device*, libusb_hotplug_event> args){
 		return;
 	}
 
-	Handle<Value> argv[] = {eventName, v8dev};
+	Local<Value> argv[] = {eventName, v8dev};
 	Nan::MakeCallback(Nan::New<Object>(hotplugThis), "emit", 2, argv);
 }
 
@@ -198,7 +196,7 @@ void DisableHotplugEvents(const Nan::FunctionCallbackInfo<Value>& args) {
 	}
 }
 
-void initConstants(Handle<Object> exports){
+void initConstants(Local<Object> exports){
 	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_PER_INTERFACE);
 	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_AUDIO);
 	NODE_DEFINE_CONSTANT(exports, LIBUSB_CLASS_COMM);
