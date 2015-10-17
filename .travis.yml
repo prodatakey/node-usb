@@ -36,6 +36,7 @@ addons:
     - g++-4.8
 
 before_install:
+  - npm install -g npm
   - git clone https://github.com/creationix/nvm.git ./.nvm
   - source ./.nvm/nvm.sh
   - nvm install $NODE_VERSION
