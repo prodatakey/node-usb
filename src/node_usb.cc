@@ -58,7 +58,7 @@ void USBThreadFn(void*) {
 }
 #endif
 
-void InitializeModule(Local<Object> exports) {
+NAN_MODULE_INIT(InitializeModule) {
 	Nan::HandleScope();
 
 	//CHANGE: Initialize libusb. On error, throw, used to set a property with the error code and silently return
@@ -84,15 +84,15 @@ void InitializeModule(Local<Object> exports) {
 	uv_thread_create(&usb_thread, USBThreadFn, NULL);
 	#endif
 
-	Device::Init(exports);
-	Transfer::Init(exports);
+	Device::Init(target);
+	Transfer::Init(target);
 
-	Nan::SetMethod(exports, "setDebugLevel", SetDebugLevel);
-	Nan::SetMethod(exports, "getDeviceList", GetDeviceList);
-	Nan::SetMethod(exports, "_enableHotplugEvents", EnableHotplugEvents);
-	Nan::SetMethod(exports, "_disableHotplugEvents", DisableHotplugEvents);
+	Nan::SetMethod(target, "setDebugLevel", SetDebugLevel);
+	Nan::SetMethod(target, "getDeviceList", GetDeviceList);
+	Nan::SetMethod(target, "_enableHotplugEvents", EnableHotplugEvents);
+	Nan::SetMethod(target, "_disableHotplugEvents", DisableHotplugEvents);
 
-	initConstants(exports);
+	initConstants(target);
 }
 
 NODE_MODULE(usb_bindings, InitializeModule)
