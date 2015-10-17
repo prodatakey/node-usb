@@ -1,5 +1,6 @@
+language: cpp
+compiler: gcc
 sudo: false
-language: node_js
 
 os:
   - linux
@@ -9,15 +10,13 @@ env:
   global:
     - secure: VwwHS3ZYxu5WudTcWRw588aekYZrTHMDvziNWLhPnadVs+ami6EF7CMHFZenkvSehmmaunKaH0vcNuxDXqLjrZN8Qt6aOuVVq9o/N6+8OG6/E2D0lDRFF9OZdAKetzS7EtoZfVJpqe009leg9V5mjx3uo1WRlc6SqmeKynaUDaY=
   matrix:
-    - CXX=g++-4.8
-
-node_js:
-  - "4.2"
-  - "4.1"
-  - "4.0"
-  - "0.12"
-  - "0.10"
-  - "0.8"
+    - NODE_VERSION="0.10"
+    - NODE_VERSION="0.12"
+    - NODE_VERSION="iojs-v1.0"
+    - NODE_VERSION="iojs-v1"
+    - NODE_VERSION="iojs-v2"
+    - CXX="g++-4.8" NODE_VERSION="iojs-v3"
+    - CXX="g++-4.8" NODE_VERSION="4"
 
 addons:
  apt:
@@ -26,7 +25,14 @@ addons:
   packages:
     - libudev-dev
     - gcc-4.8
-      - g++-4.8
+    - g++-4.8
+
+before_install:
+  - git clone https://github.com/creationix/nvm.git ./.nvm
+  - source ./.nvm/nvm.sh
+  - nvm install $NODE_VERSION
+  - nvm use $NODE_VERSION
+  - npm config set python `which python`
 
 script:
   - npm install --build-from-source
