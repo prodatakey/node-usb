@@ -164,7 +164,7 @@ void handleHotplug(std::pair<libusb_device*, libusb_hotplug_event> args){
 	}
 
 	Handle<Value> argv[] = {eventName, v8dev};
-	Nan::MakeCallback(Nan::New(hotplugThis), "emit", 2, argv);
+	Nan::MakeCallback(Nan::New<Object>(hotplugThis), "emit", 2, argv);
 }
 
 bool hotplugEnabled = 0;
