@@ -36,15 +36,12 @@ addons:
     - g++-4.8
 
 before_install:
-  - npm install -g npm
   - git clone https://github.com/creationix/nvm.git ./.nvm
   - source ./.nvm/nvm.sh
   - nvm install $NODE_VERSION
   - nvm use $NODE_VERSION
+  - npm install -g npm
   - npm config set python `which python`
-
-install:
-  - export PATH=./node_modules/.bin/:$PATH
 
 script:
   - npm install --build-from-source
