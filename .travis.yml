@@ -19,13 +19,13 @@ env:
 matrix:
   include: 
     - os: linux
-        env: 
-          - CXX="g++-4.8" NODE_VERSION="iojs-v3"
-          - CXX="g++-4.8" NODE_VERSION="4"
+        env: CXX="g++-4.8" NODE_VERSION="iojs-v3"
+    - os: linux
+        env: CXX="g++-4.8" NODE_VERSION="4"
     - os: osx
-        env:
-          - NODE_VERSION="iojs-v3"
-          - NODE_VERSION="4"
+        env: NODE_VERSION="iojs-v3"
+    - os: osx
+        env: NODE_VERSION="4"
 
 addons:
  apt:
