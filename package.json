@@ -47,13 +47,13 @@
     "remote_path": "./pre-gyp/{name}/v{version}"
   },
   "dependencies": {
-    "nan": "^2.0.0"
+    "nan": "~2.0.0"
   },
   "devDependencies": {
     "aws-sdk": "~2.0.0-rc.15",
     "coffee-script": "~1.6.2",
     "mocha": "~1.8.2",
-    "node-pre-gyp": "^0.6.13"
+    "node-pre-gyp": "~0.6.13"
   },
   "license": "MIT"
 }

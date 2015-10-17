@@ -40,7 +40,6 @@ before_install:
   - source ./.nvm/nvm.sh
   - nvm install $NODE_VERSION
   - nvm use $NODE_VERSION
-  - npm install -g npm
   - npm config set python `which python`
 
 script:
