@@ -58,7 +58,7 @@ void USBThreadFn(void*) {
 }
 #endif
 
-void InitializeModule(Handle<Object> exports) {
+void InitializeModule(Local<Object> exports) {
 	Nan::HandleScope();
 
 	//CHANGE: Initialize libusb. On error, throw, used to set a property with the error code and silently return
