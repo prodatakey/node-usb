@@ -26,7 +26,7 @@ Local<Value> libusbException(int errorno);
 
 class Device: public Nan::ObjectWrap {
   public:
-	static void Init(Local<Object> exports);
+	static NAN_MODULE_INIT(Init);
 	static inline Device* Unwrap(Local<Object> obj) {
 		return Nan::ObjectWrap::Unwrap<Device>(obj);
 	};
@@ -83,7 +83,7 @@ class Device: public Nan::ObjectWrap {
 
 class Transfer : public Nan::ObjectWrap {
   public:
-	static void Init(Local<Object> exports);
+	static NAN_MODULE_INIT(Init);
 	static inline Transfer* Unwrap(Local<Object> obj) {
 		return Nan::ObjectWrap::Unwrap<Transfer>(obj);
 	};
