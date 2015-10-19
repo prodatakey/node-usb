@@ -5,35 +5,49 @@ var binding_path = binary.find(path.resolve(path.join(__dirname,'./package.json'
 var usb = module.exports = exports = require(binding_path);
 var events = require('events');
 var util = require('util');
+var _ = require('lodash');
 
 Object.keys(events.EventEmitter.prototype).forEach(function(key) {
 	exports[key] = events.EventEmitter.prototype[key];
 });
 
-// convenience method for finding a device by vendor and product id
-exports.findByIds = function(vid, pid, cb) {
-	usb.getDeviceList(function(err, devices) {
-    if(err) return cb(err);
+/**
+ * Find all devices with a specific vendor id and product id.
+ */
+exports.allByIds = function(vid, pid) {
+  return usb.getDeviceList()
+    .filter(function(dev) {
+      return dev.deviceDescriptor.idVendor === vid && dev.deviceDescriptor.idProduct === pid;
+    });
+};
 
-    for(var i = 0; i < devices.length; i++) {
-      var deviceDesc = devices[i].deviceDescriptor;
-      if((deviceDesc.idVendor == vid) && (deviceDesc.idProduct == pid)) {
-        return cb(null, devices[i]);
-      }
-    }
-  });
+/**
+ * Find a device by vendor id, product id, and index.
+ */
+exports.findByIds = function(vid, pid, index) {
+  index = index || 0;
+	return exports.allByIds(vid, pid)[index];
+};
+
+/**
+ * Find a specific device by vendor id, product id, and serial number.
+ */
+exports.findBySerial = function(vid, pid, serial) {
+  return exports
+    .allByIds(vid, pid)
+    .filter(function(dev) {
+      return dev.deviceDescriptor.iSerialNumber === serial;
+    })[0];
 };
 
 usb.Device.prototype.timeout = 1000;
 
 usb.Device.prototype.open = function() {
 	this.__open();
-	this.interfaces = [];
 
-	var len = this.configDescriptor.interfaces.length;
-	for(var i=0; i<len; i++) {
-		this.interfaces[i] = new Interface(this, i);
-	}
+  this.interfaces = this.configDescriptor.interfaces.map(function(interface) {
+    return new Interface(this, interface);
+  }.bind(this));
 };
 
 usb.Device.prototype.close = function() {
@@ -53,11 +67,7 @@ usb.Device.prototype.interface = function(addr) {
 	}
 
 	addr = addr || 0;
-	for(var i=0; i<this.interfaces.length; i++) {
-		if(this.interfaces[i].interfaceNumber == addr) {
-			return this.interfaces[i];
-		}
-	}
+  return _.first(this.interfaces, function(i) { return i.interfaceNumber === addr; });
 };
 
 var SETUP_SIZE = usb.LIBUSB_CONTROL_SETUP_SIZE;
@@ -68,17 +78,17 @@ function(bmRequestType, bRequest, wValue, wIndex, data_or_length, callback) {
 	var isIn = !!(bmRequestType & usb.LIBUSB_ENDPOINT_IN);
 	var wLength;
 
-	if(isIn) {
-		if(data_or_length < 0) {
-			callback(new TypeError("Expected size number for IN transfer (based on bmRequestType)"));
-		}
-		wLength = data_or_length;
-	} else {
-		if(!Buffer.isBuffer(data_or_length)) {
-			callback(new TypeError("Expected buffer for OUT transfer (based on bmRequestType)"));
-		}
-		wLength = data_or_length.length;
-	}
+  if(isIn) {
+    if(data_or_length < 0) {
+      callback(new TypeError("Expected size number for IN transfer (based on bmRequestType)"));
+    }
+    wLength = data_or_length;
+  } else {
+    if(!Buffer.isBuffer(data_or_length)) {
+      callback(new TypeError("Expected buffer for OUT transfer (based on bmRequestType)"));
+    }
+    wLength = data_or_length.length;
+  }
 
 	// Buffer for the setup packet
 	// http://libusbx.sourceforge.net/api-1.0/structlibusb__control__setup.html
@@ -129,23 +139,21 @@ usb.Device.prototype.getStringDescriptor = function(desc_index, callback) {
 	);
 };
 
-function Interface(device, id) {
+function Interface(device, interfaceDesc, alt) {
 	this.device = device;
-	this.id = id;
-	this.altSetting = 0;
+	this.altSetting = alt || 0;
+  this.descriptor = interfaceDesc[this.altSetting];
+  this.bInterfaceNumber = this.interfaceDesc.bInterfaceNumber;
+  this.id = this.bInterfaceNumber;
+
 	this.__refresh();
 }
 
 Interface.prototype.__refresh = function() {
-	this.descriptor = this.device.configDescriptor.interfaces[this.id][this.altSetting];
-	this.interfaceNumber = this.descriptor.bInterfaceNumber;
-	this.endpoints = [];
-	var len = this.descriptor.endpoints.length;
-	for(var i=0; i<len; i++) {
-		var desc = this.descriptor.endpoints[i];
-		var c = (desc.bEndpointAddress&usb.LIBUSB_ENDPOINT_IN)?InEndpoint:OutEndpoint;
-		this.endpoints[i] = new c(this.device, desc);
-	}
+  this.endpoints = this.descriptor.
+    endpoints.map(function(endpoint) {
+       return Endpoint.create(this.device, endpoint);
+    }.bind(this));
 };
 
 Interface.prototype.claim = function() {
@@ -211,11 +219,7 @@ Interface.prototype.setAltSetting = function(altSetting, cb) {
 };
 
 Interface.prototype.endpoint = function(addr) {
-	for(var i=0; i<this.endpoints.length; i++) {
-		if(this.endpoints[i].address == addr) {
-			return this.endpoints[i];
-		}
-	}
+  return _.first(this.endpoints, function(e) { return e.address === addr; });
 };
 
 function Endpoint(device, descriptor) {
@@ -225,6 +229,16 @@ function Endpoint(device, descriptor) {
 	this.transferType = descriptor.bmAttributes & 0x03;
 }
 util.inherits(Endpoint, events.EventEmitter);
+
+Endpoint.create = function(device, descriptor) {
+  var endpoint;
+  if(endpoint.bEndPointAddress & usb.LIBUSB_ENDPOINT_IN)
+    endpoint = new InEndpoint(device, endpoint);
+  else
+    endpoint = new OutEndpoint(device, endpoint);
+
+  return endpoint;
+};
 
 Endpoint.prototype.timeout = 0;
 
@@ -242,21 +256,20 @@ Endpoint.prototype.startPoll = function(nTransfers, transferSize, callback) {
 	this.pollActive = true;
 	this.pollPending = 0;
 
-	var transfers = [];
-	for(var i=0; i<nTransfers; i++) {
-		transfers[i] = this.makeTransfer(0, callback);
-	}
-
-	return transfers;
+  return _
+    .range(nTransfers)
+    .map(function(i) {
+      return this.makeTransfer(0, callback);
+    }.bind(this));
 };
 
 Endpoint.prototype.stopPoll = function(cb) {
 	if(!this.pollTransfers) {
 		throw new Error('Polling is not active.');
 	}
-	for(var i=0; i<this.pollTransfers.length; i++) {
-		this.pollTransfers[i].cancel();
-	}
+  this.pollTransfers.forEach(function(transfer) {
+    transfer.cancel();
+  });
 	this.pollActive = false;
 	if(cb) this.once('end', cb);
 };

@@ -104,21 +104,9 @@ void SetDebugLevel(const Nan::FunctionCallbackInfo<Value>& args) {
 }
 
 void GetDeviceList(const Nan::FunctionCallbackInfo<Value>& args) {
-	if(args.Length() < 1 || !args[0]->IsFunction()) {
-		return Nan::ThrowTypeError("Callback must be supplied as first argument");
-	}
-	Local<Function> callback = args[0].As<Function>();
-
-	Local<Value> argv[2] = { Nan::Null(), Nan::Null() };
-
 	libusb_device **devs;
 	int cnt = libusb_get_device_list(usb_context, &devs);
-	if(cnt < LIBUSB_SUCCESS) {
-		//js/ callback(execption, null);
-		argv[0] = libusbException(cnt);
-		callback->Call(args.This(), 2, argv);
-		return;
-	}
+	CHECK_USB(cnt);
 
 	Local<Array> arr = Nan::New<Array>(cnt);
 
@@ -126,11 +114,9 @@ void GetDeviceList(const Nan::FunctionCallbackInfo<Value>& args) {
 		arr->Set(i, Device::FromLibUSBDevice(devs[i]));
 	}
 
-	//js/ callback(null, array);
-	argv[1] = arr;
-	callback->Call(args.This(), 2, argv);
-
 	libusb_free_device_list(devs, true);
+
+	args.GetReturnValue().Set(arr);
 }
 
 Nan::Persistent<Object> hotplugThis;

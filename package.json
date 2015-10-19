@@ -47,6 +47,7 @@
     "remote_path": "./pre-gyp/{name}/v{version}"
   },
   "dependencies": {
+    "lodash": "^3.10.1",
     "nan": "~2.0.0"
   },
   "devDependencies": {

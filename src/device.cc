@@ -11,19 +11,18 @@ Local<Object> makeBuffer(const unsigned char* ptr, unsigned length) {
 Nan::Persistent<Function> Device::constructor;
 
 Device::Device(libusb_device* d): device(d), device_handle(0) {
+	// Reference libusb_device to signal this device is "using" it
 	libusb_ref_device(device);
 	DEBUG_LOG("Created device %p", this);
 }
 
 Device::~Device(){
 	//TODO: Research destruction/closure
-	/*
-	https://code.google.com/p/v8-juice/wiki/CommentaryOnV8#No_GC_guaranty
+	/* https://code.google.com/p/v8-juice/wiki/CommentaryOnV8#No_GC_guaranty */
 
 	DEBUG_LOG("Freed device %p", this);
 	libusb_close(device_handle);
 	libusb_unref_device(device);
-	*/
 }
 
 // static
